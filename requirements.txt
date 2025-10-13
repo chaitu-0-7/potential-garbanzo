@@ -1,0 +1,9 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+playwright==1.40.0
+PyPDF2==3.0.1
+pdfplumber==0.11.6
+python-telegram-bot==20.7
+pymongo==4.6.0
+python-dotenv==1.0.0
+APScheduler==3.10.4
