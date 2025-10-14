@@ -58,6 +58,8 @@ def extract_job_urls(page):
 def scrape_jobs(url: str, max_jobs: int = 30):
     """Main function to scrape LinkedIn jobs with early deduplication."""
     from database import MongoDB
+
+    is_ci = os.getenv('GITHUB_ACTIONS') == 'true' or os.getenv('CI') == 'true'
     
     print("🚀 Starting LinkedIn Scraper (LLM-Enhanced)")
     
@@ -68,7 +70,7 @@ def scrape_jobs(url: str, max_jobs: int = 30):
     
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=False,
+            headless=is_ci,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--disable-dev-shm-usage',
