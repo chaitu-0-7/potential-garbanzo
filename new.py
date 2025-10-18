@@ -9,10 +9,13 @@ from dotenv import load_dotenv
 import os
 import time
 
+from llm_batch_matcher import batch_match_jobs, create_fallback_match
+
 # Load environment variables
 load_dotenv()
 
 # Import your project modules
+from filters import batch_pre_filter_jobs
 from scraper import scrape_jobs
 from llm_matcher import llm_match_job as match_job
 from database import MongoDB
@@ -132,6 +135,29 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
 
             logging.info(f"Scraped {len(scraped_jobs)} jobs from LinkedIn")
 
+                    # === NEW: PRE-FILTER JOBS ===
+            logging.info("🔍 Applying keyword pre-filter...")
+            passed_jobs, rejected_jobs = batch_pre_filter_jobs(scraped_jobs)
+            
+            stats['pre_filter_passed'] = len(passed_jobs)
+            stats['pre_filter_rejected'] = len(rejected_jobs)
+            
+            logging.info(f"✅ Pre-filter: {len(passed_jobs)} passed, {len(rejected_jobs)} rejected")
+            
+            # Log sample rejections for debugging
+            if rejected_jobs:
+                sample_rejections = rejected_jobs[:3]
+                for job in sample_rejections:
+                    logging.debug(f"   ❌ Rejected: {job.get('job_title')} - {job.get('rejection_reason')}")
+            
+            # If no jobs passed filter, exit early
+            if not passed_jobs:
+                logging.info("No jobs passed pre-filter criteria.")
+                end_time = time_module.time()
+                stats['execution_time_seconds'] = end_time - start_time
+                send_summary_notification(stats)
+                return
+
             # Double-check against notifications (safety check)
             truly_new_jobs = []
             already_notified_count = 0
@@ -139,7 +165,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
             for job in scraped_jobs:
                 job_id = job.get('job_id')
                 already_notified = notifications_collection.find_one({"job_id": job_id})
-                
+
                 if not already_notified:
                     truly_new_jobs.append(job)
                     existing_job = jobs_collection.find_one({"job_id": job_id})
@@ -175,12 +201,12 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
             
             logging.info(f"💾 Found {len(truly_new_jobs)} new jobs. Skipped {already_notified_count} already notified.")
 
-            if not truly_new_jobs:
-                logging.info("No new jobs to process.")
-                end_time = time_module.time()
-                stats['execution_time_seconds'] = end_time - start_time
-                send_summary_notification(stats)
-                return
+            # if not truly_new_jobs:
+            #     logging.info("No new jobs to process.")
+            #     end_time = time_module.time()
+            #     stats['execution_time_seconds'] = end_time - start_time
+            #     send_summary_notification(stats)
+            #     return
 
             # Parse resume
             resume_data = parse_resume(RESUME_PATH)
@@ -193,18 +219,33 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                 send_summary_notification(stats)
                 return
 
-            # Match and notify
+            
+                    # === NEW: BATCH LLM MATCHING ===
+            logging.info(f"🤖 Sending {len(truly_new_jobs)} jobs for batch LLM analysis...")
+            
+            # Call batch matcher (ONE API call for all jobs)
+            match_results = batch_match_jobs(truly_new_jobs, resume_data)
+            
+            if match_results:
+                stats['llm_successes'] = len(match_results)
+                stats['llm_fallbacks'] = len(truly_new_jobs) - len(match_results)
+            else:
+                stats['llm_fallbacks'] = len(truly_new_jobs)
+                logging.warning("Batch LLM matching returned no results")
+            
+            # Process each job with its match result
             top_matches = []
             
             for job in truly_new_jobs:
                 job_id = job.get('job_id')
                 
                 try:
-                    match_data = match_job(job, resume_data)
+                    # Get match data from batch results or create fallback
+                    match_data = match_results.get(job_id)
                     
-                    if match_data.get('llm_analysis'):
-                        stats['llm_successes'] += 1
-                    else:
+                    if not match_data:
+                        logging.warning(f"No LLM result for {job_id}, using fallback")
+                        match_data = create_fallback_match(job, "Not in batch response")
                         stats['llm_fallbacks'] += 1
                     
                     match_score = match_data.get('scores', {}).get('total', 0)
@@ -218,7 +259,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                             'score': match_score
                         })
                         
-                        # Save match
+                        # Save match to DB (ALL FIELDS)
                         match_document = {
                             "job_id": job_id,
                             "job_title": job.get('job_title'),
@@ -238,9 +279,13 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                             "llm_analysis": match_data.get('llm_analysis', False),
                             "llm_model": match_data.get('llm_model'),
                             "fallback_reason": match_data.get('fallback_reason'),
-                            "matched_at": datetime.now(pytz.timezone(SCHEDULER_TIMEZONE))
+                            "matched_at": match_data.get('matched_at')
                         }
-                        matches_collection.update_one({"job_id": job_id}, {"$set": match_document}, upsert=True)
+                        matches_collection.update_one(
+                            {"job_id": job_id},
+                            {"$set": match_document},
+                            upsert=True
+                        )
                         
                         # Send notification
                         notification_payload = {"job": job, "match": match_data}
@@ -288,7 +333,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                             "match_score": match_score,
                             "classification": match_data.get('classification') if match_data else 'N/A',
                             "status": "skipped_low_score",
-                            "skip_reason": match_data.get('skip_reason') if match_data else 'Below threshold',
+                            "skip_reason": f"Score {match_score} below threshold {MIN_MATCH_SCORE}",
                             "timestamp": datetime.now(pytz.timezone(SCHEDULER_TIMEZONE)),
                             "run_type": run_type,
                             "llm_analysis": match_data.get('llm_analysis', False) if match_data else False,
@@ -311,7 +356,6 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                         "run_type": run_type
                     })
                     continue
-            
             top_matches.sort(key=lambda x: x['score'], reverse=True)
             stats['top_matches'] = top_matches[:5]
             

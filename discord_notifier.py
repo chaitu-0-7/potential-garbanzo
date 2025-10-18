@@ -297,7 +297,7 @@ def send_discord_notification(job_match: dict):
 
 def send_summary_notification(summary_data: dict):
     """
-    Send execution summary to Discord.
+    Send execution summary to Discord with pre-filter statistics.
     
     Args:
         summary_data: Dict containing run statistics
@@ -335,11 +335,13 @@ def send_summary_notification(summary_data: dict):
     jobs_found = summary_data.get('jobs_found_on_linkedin', 0)
     scraped_count = summary_data.get('jobs_scraped', 0)
     already_seen = summary_data.get('already_seen', 0)
+    already_notified = summary_data.get('already_notified', 0)
     new_jobs_count = summary_data.get('new_jobs', 0)
     
     scraping_text = f"**Found on LinkedIn:** {jobs_found}\n" if jobs_found > 0 else ""
     scraping_text += f"**New Jobs Scraped:** {scraped_count}\n"
     scraping_text += f"**Already Seen:** {already_seen}\n" if already_seen > 0 else ""
+    scraping_text += f"**Already Notified:** {already_notified}\n" if already_notified > 0 else ""
     scraping_text += f"**Ready to Match:** {new_jobs_count}"
     
     fields.append({
@@ -347,6 +349,28 @@ def send_summary_notification(summary_data: dict):
         "value": scraping_text,
         "inline": True
     })
+    
+    # === NEW: Pre-Filter Statistics ===
+    pre_filter_passed = summary_data.get('pre_filter_passed', 0)
+    pre_filter_rejected = summary_data.get('pre_filter_rejected', 0)
+    api_calls_saved = pre_filter_rejected
+    
+    if scraped_count > 0:  # Only show if we actually scraped jobs
+        filter_pass_rate = (pre_filter_passed / scraped_count * 100) if scraped_count > 0 else 0
+        
+        filter_text = f"**Passed Filter:** {pre_filter_passed}\n"
+        filter_text += f"**Rejected:** {pre_filter_rejected}\n"
+        filter_text += f"**Pass Rate:** {filter_pass_rate:.1f}%\n"
+        filter_text += f"**💰 API Calls Saved:** {api_calls_saved}"
+        
+        fields.append({
+            "name": "🔍 Pre-Filter Results",
+            "value": filter_text,
+            "inline": True
+        })
+    
+    # Add blank field for alignment
+    fields.append({"name": "\u200b", "value": "\u200b", "inline": True})
     
     # Matching statistics
     matches_found = summary_data.get('matches_found', 0)
@@ -362,9 +386,6 @@ def send_summary_notification(summary_data: dict):
         "value": matching_text,
         "inline": True
     })
-    
-    # Add blank field for alignment
-    fields.append({"name": "\u200b", "value": "\u200b", "inline": True})
     
     # LLM usage statistics (if available)
     llm_successes = summary_data.get('llm_successes', 0)
@@ -389,9 +410,6 @@ def send_summary_notification(summary_data: dict):
         "value": f"{execution_time:.1f} seconds",
         "inline": True
     })
-    
-    # Add blank field for alignment
-    fields.append({"name": "\u200b", "value": "\u200b", "inline": True})
     
     # Error information (if any)
     errors = summary_data.get('errors', [])
@@ -453,4 +471,3 @@ def send_summary_notification(summary_data: dict):
     except requests.exceptions.RequestException as e:
         print(f"❌ Failed to send summary notification: {e}")
         return "error_send_failed"
-

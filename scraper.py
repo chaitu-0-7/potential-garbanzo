@@ -124,11 +124,12 @@ def scrape_jobs(url: str, max_jobs: int = 30):
         print(f"   • Already processed: {already_seen_count}")
         
         # Only scrape NEW jobs
-        if not new_job_urls:
-            print("⚠️  No new jobs to scrape. All jobs already processed.")
-            browser.close()
-            db_instance.close_connection()
-            return [], None
+        # if not new_job_urls:
+        #     print("⚠️  No new jobs to scrape. All jobs already processed.")
+        #     browser.close()
+        #     db_instance.close_connection()
+        #     return [], None
+        new_job_urls = job_urls  # TEMP: Scrape all for testing
 
         print(f"\n📝 Scraping details for {len(new_job_urls)} NEW jobs...")
         scraped_jobs = []
