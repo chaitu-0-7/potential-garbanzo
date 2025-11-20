@@ -301,9 +301,11 @@ def rule_based_match(job: Dict, resume_data: Dict) -> Dict:
     combined_job_text = f"{job_title} {job_description}"
     
     # Extract resume skills
-    resume_skills = resume_data.get('skills', [])
-    resume_skills.extend(resume_data.get('technical_skills', []))
-    resume_skills.extend(resume_data.get('tools', []))
+    resume_skills = resume_data.get('all_skills', [])
+    if not resume_skills:
+        resume_skills = resume_data.get('skills', [])
+        resume_skills.extend(resume_data.get('primary_skills', []))
+        resume_skills.extend(resume_data.get('secondary_skills', []))
     resume_skills = list(set(resume_skills))  # Deduplicate
     
     # Extract job skills
@@ -332,7 +334,7 @@ def rule_based_match(job: Dict, resume_data: Dict) -> Dict:
     
     # Calculate scores
     technical_score = skill_match_pct
-    culture_score = 70.0  # Neutral score (can't assess without LLM)
+    culture_score = 80.0  # Boosted neutral score for fallback
     
     # Adjust technical score based on critical skills
     critical_skills = ['sql', 'python', 'etl', 'data pipeline']

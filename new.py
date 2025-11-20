@@ -32,7 +32,7 @@ SCHEDULER_START_HOUR = int(os.getenv("SCHEDULER_START_HOUR", 7))
 SCHEDULER_END_HOUR = int(os.getenv("SCHEDULER_END_HOUR", 23))
 SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Kolkata")
 SCRAPE_MAX_JOBS = int(os.getenv("SCRAPE_MAX_JOBS", 30))
-MIN_MATCH_SCORE = int(os.getenv("MIN_MATCH_SCORE", 60))
+MIN_MATCH_SCORE = int(os.getenv("MIN_MATCH_SCORE", 50))
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 LINKEDIN_URL = os.getenv("LINKEDIN_URL")
 RESUME_PATH = os.getenv("RESUME_PATH")
@@ -148,7 +148,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
             if rejected_jobs:
                 sample_rejections = rejected_jobs[:3]
                 for job in sample_rejections:
-                    logging.debug(f"   ❌ Rejected: {job.get('job_title')} - {job.get('rejection_reason')}")
+                    logging.info(f"   ❌ Rejected: {job.get('job_title')} - {job.get('rejection_reason')}")
             
             # If no jobs passed filter, exit early
             if not passed_jobs:
@@ -341,6 +341,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                             "applicant_count": job.get('applicant_count'),
                         }
                         notifications_collection.insert_one(notification_document)
+                        logging.info(f"📉 Skipped: {job.get('job_title')} ({match_score:.1f}%) - Below threshold {MIN_MATCH_SCORE}")
                         
                 except Exception as e:
                     logging.error(f"Error processing job {job_id}: {e}", exc_info=True)

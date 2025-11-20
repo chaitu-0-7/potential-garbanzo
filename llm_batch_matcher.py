@@ -147,21 +147,6 @@ def build_batch_prompt(jobs: List[Dict], resume_data: Dict) -> str:
     
     prompt = f"""You are an expert job matching AI. Analyze {len(jobs)} job postings against this candidate's resume and return structured match analysis for EACH job.
 
-**CANDIDATE RESUME:**
-Name: {resume_data.get('name', 'N/A')}
-Current Role: {resume_data.get('current_role', 'N/A')}
-Experience: {resume_data.get('total_experience_years', 'N/A')} years
-
-Key Skills: {', '.join(resume_data.get('skills', [])[:20])}
-Technical Skills: {', '.join(resume_data.get('technical_skills', [])[:15])}
-Tools: {', '.join(resume_data.get('tools', [])[:15])}
-
-Education: {resume_data.get('education', [])}
-Certifications: {resume_data.get('certifications', [])}
-
-Recent Experience:
-{json.dumps(resume_data.get('experience', [])[:2], indent=2)}
-
 **JOBS TO ANALYZE ({len(jobs)} total):**
 {json.dumps(jobs_data, indent=2)}
 
@@ -307,10 +292,10 @@ def create_fallback_match(job: Dict, reason: str = "LLM batch failed") -> Dict:
     return {
         "job_id": job.get("job_id"),
         "scores": {
-            "technical": 50,
-            "experience": 50,
-            "culture": 50,
-            "total": 50
+            "technical": 60,
+            "experience": 60,
+            "culture": 60,
+            "total": 60
         },
         "classification": "FAIR",
         "matched_skills": [],

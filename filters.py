@@ -24,7 +24,7 @@ REQUIRED_SKILLS = [
 ]
 
 # Minimum skill matches required
-MIN_SKILL_MATCHES = 4
+MIN_SKILL_MATCHES = 3
 
 # filters.py (continued)
 
