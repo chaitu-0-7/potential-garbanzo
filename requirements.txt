@@ -16,3 +16,6 @@ pdfminer.six==20231228
 
 # AI
 openai
+
+# UI
+rich

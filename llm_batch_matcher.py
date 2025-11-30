@@ -101,7 +101,7 @@ BATCH_MATCH_SCHEMA = {
                     "parsed_job_details": {
                         "type": "object",
                         "properties": {
-                            "required_experience_years": {"type": ["number", "null"]},
+                            "min_experience_years": {"type": ["number", "null"]},
                             "key_technologies": {
                                 "type": "array",
                                 "items": {"type": "string"}
@@ -166,7 +166,7 @@ For EACH job, provide a complete analysis with these exact fields:
 11. **deal_breakers**: Array of critical mismatches (empty array if none)
 12. **interview_tips**: Array of 2-3 specific tips for this role
 13. **parsed_job_details**: Object with:
-    - required_experience_years: number or null
+    - min_experience_years: number or null
     - key_technologies: array of strings
     - team_size: string or null
     - role_level: string or null
@@ -284,11 +284,95 @@ def batch_match_jobs(jobs: List[Dict], resume_data: Dict) -> Dict[str, Dict]:
         return batch_rule_based_match(jobs, resume_data)
     
 
+def extract_experience_from_description(description: str) -> Optional[int]:
+    """
+    Extract minimum years of experience from job description using regex patterns.
+    Returns None if not found.
+    
+    Patterns identified from real job data:
+    - "3–5 years" or "3-5 years"
+    - "10+ years"
+    - "2 to 6 years"
+    - "Experience: 3–5 years"
+    - "4-6 years of overall industry experience"
+    - "3+ years applied experience"
+    """
+    if not description:
+        return None
+    
+    import re
+    
+    # Normalize the text - replace en-dash with regular dash
+    description_normalized = description.replace('–', '-').replace('—', '-')
+    description_lower = description_normalized.lower()
+    
+    # Pattern categories (ordered by specificity)
+    patterns = [
+        # "Experience: 3 - 5 years" or "Experience - 4-8 years"
+        r'experience\s*[:\-]\s*(\d+)[\s\-to]*(\d*)\s*years?',
+        
+        # "3-5 years of professional/hands-on/overall industry experience" (with 1-3 words)
+        r'(\d+)[\s\-to]+(\d+)\s*years?[\']?\s+of\s+(?:\w+\s+){1,3}experience',
+        
+        # "3-5 years of experience" or "3-5 years experience"
+        r'(\d+)[\s\-to]+(\d+)\s*years?[\']?\s+(?:of\s+)?experience',
+        
+        # "3+ years of experience" or "3+ years applied experience"
+        r'(\d+)\+\s*years?[\']?\s+(?:of\s+)?(?:\w+\s+)?experience',
+        
+        # "minimum 3 years" or "minimum of 3 years"
+        r'minimum\s+(?:of\s+)?(\d+)\s*years?',
+        
+        # "at least 3 years"
+        r'at\s+least\s+(\d+)\s*years?',
+        
+        # "2 to 6 years of experience" or "4 to 6 years' experience"
+        r'(\d+)\s+to\s+(\d+)\s*years?[\']?\s+(?:of\s+)?experience',
+        
+        # "Bachelor's degree and 2 to 6 years"
+        r'degree\s+and\s+(\d+)\s+to\s+(\d+)\s*years?',
+        
+        # Standalone "3+ years" or "10+ years"
+        r'(\d+)\+\s*years?',
+        
+        # "4 years experience" (less specific, lower priority)
+        r'(\d+)\s*years?[\']?\s+(?:of\s+)?experience',
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, description_lower, re.IGNORECASE)
+        if matches:
+            try:
+                # Extract all numbers from matches
+                all_numbers = []
+                for match in matches:
+                    if isinstance(match, tuple):
+                        # Handle tuples from groups - take non-empty values
+                        nums = [int(n) for n in match if n and n.isdigit()]
+                        all_numbers.extend(nums)
+                    elif isinstance(match, str) and match.isdigit():
+                        all_numbers.append(int(match))
+                
+                # Filter out unrealistic values (0 or > 30 years)
+                years = [y for y in all_numbers if 0 < y <= 30]
+                if years:
+                    return min(years)  # Return minimum requirement
+            except (ValueError, TypeError):
+                continue
+    
+    return None
+
+
 def create_fallback_match(job: Dict, reason: str = "LLM batch failed") -> Dict:
     """
     Create a fallback match response when LLM fails.
     Used for jobs that didn't get analyzed.
+    Attempts to extract experience requirement using regex.
     """
+    # Try to extract experience from job description
+    description = job.get("description", "")
+    min_experience = extract_experience_from_description(description)
+    
     return {
         "job_id": job.get("job_id"),
         "scores": {
@@ -308,7 +392,7 @@ def create_fallback_match(job: Dict, reason: str = "LLM batch failed") -> Dict:
         "deal_breakers": [],
         "interview_tips": ["Review job description manually"],
         "parsed_job_details": {
-            "required_experience_years": None,
+            "min_experience_years": min_experience,
             "key_technologies": [],
             "team_size": None,
             "role_level": None

@@ -2,12 +2,13 @@ name: Job Scraper Scheduler
 
 on:
   schedule:
-    # Run every 30 minutes from 08:00 IST through 23:00 IST (inclusive).
-    # IST = UTC+5:30. To cover both :00 and :30 IST times we add two cron lines in UTC.
-    # - At IST xx:00 -> UTC (xx-5):30 -> minute 30 of UTC hour range 2-17 (for IST 08-23)
-    # - At IST xx:30 -> UTC (xx-5):00 -> minute 0  of UTC hour range 3-18 (for IST 08-23)
-    - cron: '30 2-17 * * *'
-    - cron: '0 3-18 * * *'
+    # Run every 45 minutes from 08:00 IST through 23:00 IST
+    # IST = UTC+5:30
+    # Runs at :00, :45 past each hour in IST
+    # IST xx:00 -> UTC (xx-5):30 -> minute 30 of hours 2-17
+    # IST xx:45 -> UTC (xx-5):15 -> minute 15 of hours 3-18
+    - cron: '30 2-17 * * *'  # IST xx:00
+    - cron: '15 3-18 * * *'  # IST xx:45
   workflow_dispatch:
 
 jobs:

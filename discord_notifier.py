@@ -137,6 +137,10 @@ def send_discord_notification(job_match: dict):
     strengths = match.get('strengths', [])
     weaknesses = match.get('weaknesses', [])
     interview_tips = match.get('interview_tips', [])
+    parsed_details = match.get('parsed_job_details', {})
+    min_experience = parsed_details.get('min_experience_years')
+    if min_experience is None:
+        min_experience = parsed_details.get('required_experience_years')
     
     # Get individual scores
     technical_score = match.get('scores', {}).get('technical', 0) if match else 0
@@ -189,6 +193,21 @@ def send_discord_notification(job_match: dict):
         "value": f"**Type:** {employment_type}\n**Work:** {workplace_type}\n**Level:** {seniority_level}",
         "inline": False
     })
+
+    # Add Experience Required field if available
+    if min_experience is not None:
+        fields.append({
+            "name": "🎓 Experience Required",
+            "value": f"**{min_experience} years**",
+            "inline": True
+        })
+    else:
+        # Show that we couldn't extract this info
+        fields.append({
+            "name": "🎓 Experience Required",
+            "value": "⚠️ *Not found - review JD*",
+            "inline": True
+        })
     
     # Add LLM-specific insights if available
     if is_llm_analysis:
@@ -259,10 +278,10 @@ def send_discord_notification(job_match: dict):
         "inline": False
     })
     
-    # Add quick actions
+    # Add quick actions (REMOVED BROKEN LINK)
     fields.append({
         "name": "🔗 Quick Actions",
-        "value": f"[View Full Job]({job_url}) • [Mark as Applied](http://localhost:8000/mark-applied?job_id={job_id})",
+        "value": f"[View Full Job]({job_url})",
         "inline": False
     })
     

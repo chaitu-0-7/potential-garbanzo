@@ -1,4 +1,4 @@
-# new.py (UPDATED - Enhanced DB storage)
+# new.py (UPDATED - Enhanced DB storage & UX)
 import logging
 import re
 from datetime import datetime, timedelta
@@ -8,6 +8,24 @@ import pytz
 from dotenv import load_dotenv
 import os
 import time
+import sys
+
+# Rich Console
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.theme import Theme
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+
+# Custom theme for rich
+custom_theme = Theme({
+    "info": "cyan",
+    "warning": "yellow",
+    "error": "bold red",
+    "success": "bold green",
+    "highlight": "magenta"
+})
+console = Console(theme=custom_theme)
 
 from llm_batch_matcher import batch_match_jobs, create_fallback_match
 
@@ -19,12 +37,24 @@ from filters import batch_pre_filter_jobs
 from scraper import scrape_jobs
 from llm_matcher import llm_match_job as match_job
 from database import MongoDB
-from discord_notifier import send_discord_notification,send_summary_notification
+from discord_notifier import send_discord_notification, send_summary_notification
 from resume_parser import parse_resume
 
-# Configure logging
-from logging_config import setup_logging
-setup_logging()
+# Configure logging to file only (Rich handles console)
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# Create handlers
+file_handler = logging.FileHandler(os.path.join(log_dir, "scheduler.log"))
+error_handler = logging.FileHandler(os.path.join(log_dir, "errors.log"))
+error_handler.setLevel(logging.ERROR)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[file_handler, error_handler]
+)
 
 # --- CONFIGURATION ---
 SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
@@ -33,9 +63,30 @@ SCHEDULER_END_HOUR = int(os.getenv("SCHEDULER_END_HOUR", 23))
 SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Kolkata")
 SCRAPE_MAX_JOBS = int(os.getenv("SCRAPE_MAX_JOBS", 30))
 MIN_MATCH_SCORE = int(os.getenv("MIN_MATCH_SCORE", 50))
+FORCE_NOTIFY = os.getenv("FORCE_NOTIFY", "false").lower() == "true"
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 LINKEDIN_URL = os.getenv("LINKEDIN_URL")
 RESUME_PATH = os.getenv("RESUME_PATH")
+
+
+def validate_config():
+    """Validates essential configuration variables."""
+    missing = []
+    if not DISCORD_WEBHOOK_URL:
+        missing.append("DISCORD_WEBHOOK_URL")
+    if not LINKEDIN_URL:
+        missing.append("LINKEDIN_URL")
+    if not RESUME_PATH or not os.path.exists(RESUME_PATH):
+        missing.append(f"RESUME_PATH (File not found: {RESUME_PATH})")
+    
+    if missing:
+        console.print(Panel(f"[bold red]Configuration Error![/]\nMissing or invalid variables:\n" + "\n".join([f"- {m}" for m in missing]), title="Startup Check", border_style="red"))
+        sys.exit(1)
+    
+    if FORCE_NOTIFY:
+        console.print(Panel("[bold yellow]⚠️  FORCE_NOTIFY is ENABLED[/]\nAll jobs will be sent to Discord regardless of match score.", border_style="yellow"))
+    
+    console.print("[success]✓ Configuration validated[/]")
 
 
 def get_linkedin_url(time_filter_seconds):
@@ -57,24 +108,24 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
     import time as time_module
     start_time = time_module.time()
     
-    logging.info("========================================")
-    logging.info("🤖 AUTOMATED TASK STARTED")
-    logging.info(f"Time: {datetime.now(pytz.timezone(SCHEDULER_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    console.rule("[bold cyan]🤖 AUTOMATED TASK STARTED[/]")
+    logging.info("AUTOMATED TASK STARTED")
+    
+    current_time_str = datetime.now(pytz.timezone(SCHEDULER_TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')
+    console.print(f"Time: [highlight]{current_time_str}[/]")
     
     if is_startup_run:
         run_type = "startup"
-        logging.info("Mode: Startup Run (Immediate)")
+        console.print("Mode: [bold yellow]Startup Run (Immediate)[/]")
     elif is_morning_run:
         run_type = "morning_catchup"
-        logging.info("Mode: Morning Catch-up")
+        console.print("Mode: [bold yellow]Morning Catch-up[/]")
     elif is_hourly_run:
         run_type = "hourly"
-        logging.info("Mode: Hourly")
+        console.print("Mode: [bold yellow]Hourly[/]")
     else:
         run_type = "manual"
-        logging.info("Mode: Manual")
-    
-    logging.info("========================================")
+        console.print("Mode: [bold yellow]Manual[/]")
     
     # Initialize statistics tracking
     stats = {
@@ -95,67 +146,81 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
     db_instance = MongoDB()
 
     try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True
+        ) as progress:
+            
+            task_db = progress.add_task("[cyan]Connecting to Database...", total=None)
             jobs_collection = db_instance.get_collection("jobs")
             notifications_collection = db_instance.get_collection("notifications")
             matches_collection = db_instance.get_collection("matches")
+            progress.update(task_db, completed=True)
 
             # Determine URL
             if is_startup_run:
-                url_to_scrape = get_linkedin_url(86400)
-                logging.info("Using 24-hour lookback for startup run")
+                url_to_scrape = get_linkedin_url(21600)
+                lookback = "6-hour"
             elif is_morning_run:
                 url_to_scrape = get_linkedin_url(43200)
-                logging.info("Using 12-hour lookback for morning run")
+                lookback = "12-hour"
             elif is_hourly_run:
                 url_to_scrape = get_linkedin_url(3600)
-                logging.info("Using 1-hour lookback for hourly run")
+                lookback = "1-hour"
             else:
                 url_to_scrape = LINKEDIN_URL
-                logging.info("Using default URL")
+                lookback = "Default"
             
+            console.print(f"Lookback: [cyan]{lookback}[/]")
             logging.info(f"Scraping URL: {url_to_scrape}")
 
             # Scrape jobs
+            task_scrape = progress.add_task("[cyan]Scraping LinkedIn...", total=None)
             try:
                 scraped_jobs, filename = scrape_jobs(url_to_scrape, SCRAPE_MAX_JOBS)
                 stats['jobs_scraped'] = len(scraped_jobs) if scraped_jobs else 0
+                progress.update(task_scrape, completed=True)
             except Exception as e:
                 logging.error(f"Scraping failed: {e}", exc_info=True)
                 stats['errors'].append(f"Scraping failed: {str(e)[:100]}")
                 stats['status'] = 'failed'
                 scraped_jobs = []
+                console.print(f"[error]❌ Scraping failed: {e}[/]")
             
             if not scraped_jobs:
-                logging.info("No jobs found from scraper.")
+                console.print("[warning]No jobs found from scraper.[/]")
                 stats['status'] = 'partial' if stats['errors'] else 'success'
-                end_time = time_module.time()
-                stats['execution_time_seconds'] = end_time - start_time
-                send_summary_notification(stats)
                 return
 
-            logging.info(f"Scraped {len(scraped_jobs)} jobs from LinkedIn")
+            console.print(f"✅ Scraped [bold green]{len(scraped_jobs)}[/] jobs")
 
-                    # === NEW: PRE-FILTER JOBS ===
-            logging.info("🔍 Applying keyword pre-filter...")
-            passed_jobs, rejected_jobs = batch_pre_filter_jobs(scraped_jobs)
-            
-            stats['pre_filter_passed'] = len(passed_jobs)
-            stats['pre_filter_rejected'] = len(rejected_jobs)
-            
-            logging.info(f"✅ Pre-filter: {len(passed_jobs)} passed, {len(rejected_jobs)} rejected")
-            
-            # Log sample rejections for debugging
-            if rejected_jobs:
-                sample_rejections = rejected_jobs[:3]
-                for job in sample_rejections:
-                    logging.info(f"   ❌ Rejected: {job.get('job_title')} - {job.get('rejection_reason')}")
+            # === NEW: PRE-FILTER JOBS ===
+            if FORCE_NOTIFY:
+                console.print("[yellow]⚠️ FORCE_NOTIFY enabled: Skipping pre-filters[/]")
+                passed_jobs = scraped_jobs
+                rejected_jobs = []
+                stats['pre_filter_passed'] = len(passed_jobs)
+                stats['pre_filter_rejected'] = 0
+            else:
+                task_filter = progress.add_task("[cyan]Applying Pre-filters...", total=None)
+                passed_jobs, rejected_jobs = batch_pre_filter_jobs(scraped_jobs)
+                
+                stats['pre_filter_passed'] = len(passed_jobs)
+                stats['pre_filter_rejected'] = len(rejected_jobs)
+                progress.update(task_filter, completed=True)
+                
+                console.print(f"🔍 Pre-filter: [green]{len(passed_jobs)} passed[/], [red]{len(rejected_jobs)} rejected[/]")
+                
+                # Log sample rejections for debugging
+                if rejected_jobs:
+                    sample_rejections = rejected_jobs[:3]
+                    for job in sample_rejections:
+                        logging.info(f"   ❌ Rejected: {job.get('job_title')} - {job.get('rejection_reason')}")
             
             # If no jobs passed filter, exit early
             if not passed_jobs:
-                logging.info("No jobs passed pre-filter criteria.")
-                end_time = time_module.time()
-                stats['execution_time_seconds'] = end_time - start_time
-                send_summary_notification(stats)
+                console.print("[warning]No jobs passed pre-filter criteria.[/]")
                 return
 
             # Double-check against notifications (safety check)
@@ -166,7 +231,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                 job_id = job.get('job_id')
                 already_notified = notifications_collection.find_one({"job_id": job_id})
 
-                if not already_notified:
+                if not already_notified or FORCE_NOTIFY:
                     truly_new_jobs.append(job)
                     existing_job = jobs_collection.find_one({"job_id": job_id})
                     
@@ -199,39 +264,36 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
             stats['new_jobs'] = len(truly_new_jobs)
             stats['already_notified'] = already_notified_count
             
-            logging.info(f"💾 Found {len(truly_new_jobs)} new jobs. Skipped {already_notified_count} already notified.")
-
-            # if not truly_new_jobs:
-            #     logging.info("No new jobs to process.")
-            #     end_time = time_module.time()
-            #     stats['execution_time_seconds'] = end_time - start_time
-            #     send_summary_notification(stats)
-            #     return
+            console.print(f"💾 Found [bold green]{len(truly_new_jobs)}[/] new jobs. Skipped {already_notified_count} already notified.")
 
             # Parse resume
             resume_data = parse_resume(RESUME_PATH)
             if not resume_data:
-                logging.error("Failed to parse resume.")
+                console.print("[error]Failed to parse resume.[/]")
                 stats['errors'].append("Resume parsing failed")
                 stats['status'] = 'failed'
-                end_time = time_module.time()
-                stats['execution_time_seconds'] = end_time - start_time
-                send_summary_notification(stats)
+                stats['errors'].append("Resume parsing failed")
+                stats['status'] = 'failed'
                 return
 
             
-                    # === NEW: BATCH LLM MATCHING ===
-            logging.info(f"🤖 Sending {len(truly_new_jobs)} jobs for batch LLM analysis...")
-            
-            # Call batch matcher (ONE API call for all jobs)
-            match_results = batch_match_jobs(truly_new_jobs, resume_data)
-            
-            if match_results:
-                stats['llm_successes'] = len(match_results)
-                stats['llm_fallbacks'] = len(truly_new_jobs) - len(match_results)
+            # === NEW: BATCH LLM MATCHING ===
+            if truly_new_jobs:
+                task_llm = progress.add_task(f"[cyan]Batch LLM Analysis ({len(truly_new_jobs)} jobs)...", total=None)
+                
+                # Call batch matcher (ONE API call for all jobs)
+                match_results = batch_match_jobs(truly_new_jobs, resume_data)
+                progress.update(task_llm, completed=True)
+                
+                if match_results:
+                    stats['llm_successes'] = len(match_results)
+                    stats['llm_fallbacks'] = len(truly_new_jobs) - len(match_results)
+                else:
+                    stats['llm_fallbacks'] = len(truly_new_jobs)
+                    console.print("[warning]Batch LLM matching returned no results[/]")
             else:
-                stats['llm_fallbacks'] = len(truly_new_jobs)
-                logging.warning("Batch LLM matching returned no results")
+                match_results = {}
+                console.print("[yellow]No new jobs to analyze.[/]")
             
             # Process each job with its match result
             top_matches = []
@@ -250,7 +312,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                     
                     match_score = match_data.get('scores', {}).get('total', 0)
                     
-                    if match_data and match_score >= MIN_MATCH_SCORE:
+                    if match_data and (match_score >= MIN_MATCH_SCORE or FORCE_NOTIFY):
                         stats['matches_found'] += 1
                         
                         top_matches.append({
@@ -319,9 +381,9 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                         
                         if status == 'success':
                             stats['notifications_sent'] += 1
-                            logging.info(f"✅ Sent: {job.get('job_title')} ({match_score:.1f}%)")
+                            console.print(f"   ✅ Sent: [bold]{job.get('job_title')}[/] ({match_score:.1f}%)")
                         else:
-                            logging.warning(f"⚠️ Failed: {job.get('job_title')}")
+                            console.print(f"   ⚠️ Failed: {job.get('job_title')}")
                             stats['errors'].append(f"Notification failed: {job.get('job_title')}")
                     else:
                         stats['below_threshold'] += 1
@@ -341,11 +403,12 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                             "applicant_count": job.get('applicant_count'),
                         }
                         notifications_collection.insert_one(notification_document)
-                        logging.info(f"📉 Skipped: {job.get('job_title')} ({match_score:.1f}%) - Below threshold {MIN_MATCH_SCORE}")
+                        # console.print(f"   📉 Skipped: {job.get('job_title')} ({match_score:.1f}%)")
                         
                 except Exception as e:
                     logging.error(f"Error processing job {job_id}: {e}", exc_info=True)
                     stats['errors'].append(f"Error: {job.get('job_title', job_id)[:50]}")
+                    console.print(f"[error]Error processing job {job_id}: {e}[/]")
                     
                     notifications_collection.insert_one({
                         "job_id": job_id,
@@ -357,10 +420,11 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
                         "run_type": run_type
                     })
                     continue
+            
             top_matches.sort(key=lambda x: x['score'], reverse=True)
             stats['top_matches'] = top_matches[:5]
             
-            logging.info(f"📊 Results: {stats['matches_found']} matches, {stats['notifications_sent']} sent, {stats['below_threshold']} below threshold")
+            console.print(Panel(f"Matches: {stats['matches_found']} | Sent: {stats['notifications_sent']} | Low Score: {stats['below_threshold']}", title="Results", border_style="green"))
             
             if stats['errors']:
                 stats['status'] = 'partial'
@@ -373,6 +437,7 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
         logging.error(f"Critical error: {e}", exc_info=True)
         stats['errors'].append(f"Critical error: {str(e)[:100]}")
         stats['status'] = 'failed'
+        console.print(f"[bold red]CRITICAL ERROR: {e}[/]")
     finally:
         if db_instance:
             db_instance.close_connection()
@@ -390,16 +455,16 @@ def scrape_and_match_task(is_morning_run=False, is_hourly_run=False, is_startup_
             else:
                 stats['next_run_time'] = f"Tomorrow at {SCHEDULER_START_HOUR}:00"
         
-        logging.info("📤 Sending summary notification...")
+        logging.info("Sending summary notification...")
         send_summary_notification(stats)
         
-        logging.info("✅ TASK COMPLETED")
-        logging.info("========================================\n")
+        console.rule("[bold cyan]✅ TASK COMPLETED[/]")
+
 
 def setup_scheduler():
     """Configures and starts the scheduler."""
     if not SCHEDULER_ENABLED:
-        logging.info("Scheduler is disabled via environment variable.")
+        console.print("[yellow]Scheduler is disabled via environment variable.[/]")
         return None
 
     scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
@@ -436,13 +501,13 @@ def setup_scheduler():
         misfire_grace_time=300
     )
 
-    logging.info("🤖 Starting job scheduler...")
+    console.print("[bold green]🤖 Starting job scheduler...[/]")
     scheduler.start()
-    logging.info("✅ Scheduler started successfully.")
-    logging.info("📅 Scheduled jobs:")
+    console.print("✅ Scheduler started successfully.")
+    console.print("📅 Scheduled jobs:")
     for job in scheduler.get_jobs():
-        logging.info(f"   • {job.name} (ID: {job.id})")
-        logging.info(f"     Next run: {job.next_run_time}")
+        console.print(f"   • [cyan]{job.name}[/] (ID: {job.id})")
+        console.print(f"     Next run: {job.next_run_time}")
 
     return scheduler
 
@@ -452,7 +517,7 @@ def create_indexes(db_instance):
     Create indexes for better analytics performance.
     Run this once to optimize database queries.
     """
-    logging.info("📊 Creating database indexes for analytics...")
+    logging.info("Creating database indexes for analytics...")
     
     jobs_collection = db_instance.get_collection("jobs")
     notifications_collection = db_instance.get_collection("notifications")
@@ -493,45 +558,39 @@ def is_github_actions():
 
 # Then update __main__ section:
 if __name__ == "__main__":
-    logging.info("="*60)
-    logging.info("🚀 JOB SCRAPER SCHEDULER STARTING (LLM-ENHANCED)")
-    logging.info("="*60)
+    console.print(Panel.fit("[bold cyan]🚀 JOB SCRAPER SCHEDULER STARTING (LLM-ENHANCED)[/]", border_style="cyan"))
+    
+    # Validate configuration
+    validate_config()
     
     # Check if running in GitHub Actions
     if is_github_actions():
-        logging.info("Running in GitHub Actions mode - single execution")
+        console.print("Running in [bold]GitHub Actions[/] mode - single execution")
         # GitHub Actions will call the function directly via workflow
     else:
         # Local mode - run with scheduler
-        logging.info("Running in local mode - with scheduler")
-        
-        # Create indexes
-        # try:
-        #     # db = MongoDB()
-        #     # create_indexes(db)
-        #     # db.close_connection()
-        # except Exception as e:
-        #     logging.warning(f"Index creation skipped: {e}")
+        console.print("Running in [bold]local[/] mode - with scheduler")
         
         # Run immediately on startup
-        logging.info("\n⚡ Running IMMEDIATE startup scan...")
+        console.print("\n[bold lightning]⚡ Running IMMEDIATE startup scan...[/]")
         try:
-            scrape_and_match_task(is_hourly_run=True)
+            scrape_and_match_task(is_startup_run=True)
         except Exception as e:
+            console.print(f"[bold red]Error during startup run: {e}[/]")
             logging.error(f"Error during startup run: {e}", exc_info=True)
         
         # Setup and start the scheduler
         scheduler = setup_scheduler()
         
         if scheduler:
-            logging.info("\n💤 Scheduler is now running in background. Press Ctrl+C to exit.")
+            console.print("\n[dim]💤 Scheduler is now running in background. Press Ctrl+C to exit.[/]")
             try:
                 while True:
                     time.sleep(60)
             except (KeyboardInterrupt, SystemExit):
-                logging.info("\n🛑 Shutdown signal received...")
+                console.print("\n[bold red]🛑 Shutdown signal received...[/]")
                 scheduler.shutdown()
-                logging.info("✅ Scheduler stopped gracefully.")
+                console.print("✅ Scheduler stopped gracefully.")
         else:
-            logging.info("No scheduler to run.")
+            console.print("No scheduler to run.")
 
